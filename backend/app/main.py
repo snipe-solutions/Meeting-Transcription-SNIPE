@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 from typing import Optional, List
+import httpx
 import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
@@ -363,6 +364,60 @@ async def process_transcript_api(
 
     except Exception as e:
         logger.error(f"Error in process_transcript_api: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """
+    Accepts an audio file and proxies the request to the local Whisper C++ server
+    for transcription.
+    """
+    try:
+        logger.info(f"Received transcription request for file: {file.filename}")
+        
+        # Whisper server URL (running locally on port 8178)
+        whisper_url = "http://localhost:8178/inference"
+        
+        content = await file.read()
+        
+        # Prepare the multipart form data for the whisper server
+        files = {
+            "file": (file.filename, content, file.content_type)
+        }
+        
+        data = {
+            "response_format": "json",
+            "temperature": "0.0"
+        }
+        
+        # Make request to whisper server (use timeout=None since inference can be slow)
+        async with httpx.AsyncClient(timeout=None) as client:
+            response = await client.post(whisper_url, files=files, data=data)
+            
+        if response.status_code != 200:
+            logger.error(f"Whisper server returned error: {response.text}")
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"Whisper transcription failed: {response.text}"
+            )
+            
+        result = response.json()
+        
+        # The whisper server returns JSON matching { "text": "..." }
+        transcribed_text = result.get("text", "")
+        
+        return JSONResponse({
+            "text": transcribed_text
+        })
+        
+    except httpx.RequestError as e:
+        logger.error(f"Failed to reach Whisper server: {e}")
+        raise HTTPException(
+            status_code=503, 
+            detail="Transcription service is unavailable. Ensure the Whisper server is running on port 8178."
+        )
+    except Exception as e:
+        logger.error(f"Error in transcribe_audio API: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/get-summary/{meeting_id}")

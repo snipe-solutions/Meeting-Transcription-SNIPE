@@ -1,9 +1,13 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 from typing import Optional, List
+import httpx
+from pydub import AudioSegment
+import tempfile
+import os
 import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
@@ -363,6 +367,87 @@ async def process_transcript_api(
 
     except Exception as e:
         logger.error(f"Error in process_transcript_api: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """
+    Accepts an audio file and proxies the request to the local Whisper C++ server
+    for transcription.
+    """
+    try:
+        logger.info(f"Received transcription request for file: {file.filename}")
+        
+        # Whisper server URL (running locally on port 8178)
+        whisper_url = "http://localhost:8178/inference"
+        
+        # 1. Read the audio upload directly into a temporary WAV wrapper buffer
+        # The Whisper native C++ engine rigidly requires 16000Hz PCM Stereo for Diarization chunks.
+        content = await file.read()
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_input:
+            temp_input.write(content)
+            temp_input_path = temp_input.name
+            
+        temp_wav_path = tempfile.mktemp(suffix=".wav")
+        
+        try:
+            logger.info("Converting uploaded audio to 16kHz Stereo WAV for Whisper C++ ingestion.")
+            audio = AudioSegment.from_file(temp_input_path)
+            
+            # Reformat explicitly to 16kHz (frame_rate) and Stereo (channels=2)
+            audio = audio.set_frame_rate(16000).set_channels(2)
+            # Export tightly to pcm_16le WAV
+            audio.export(temp_wav_path, format="wav", codec="pcm_s16le")
+            
+            with open(temp_wav_path, "rb") as f:
+                wav_content = f.read()
+                
+            # Prepare the multipart form data for the whisper server
+            files = {
+                "file": ("converted.wav", wav_content, "audio/wav")
+            }
+            
+            data = {
+                "response_format": "json",
+                "temperature": "0.0"
+            }
+            
+            # Make request to whisper server (use timeout=None since inference can be slow)
+            async with httpx.AsyncClient(timeout=None) as client:
+                response = await client.post(whisper_url, files=files, data=data)
+                
+        finally:
+            # Clean up temporary buffers
+            if os.path.exists(temp_input_path):
+                os.remove(temp_input_path)
+            if os.path.exists(temp_wav_path):
+                os.remove(temp_wav_path)
+            
+        if response.status_code != 200:
+            logger.error(f"Whisper server returned error: {response.text}")
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"Whisper transcription failed: {response.text}"
+            )
+            
+        result = response.json()
+        
+        # The whisper server returns JSON matching { "text": "..." }
+        transcribed_text = result.get("text", "")
+        
+        return JSONResponse({
+            "text": transcribed_text
+        })
+        
+    except httpx.RequestError as e:
+        logger.error(f"Failed to reach Whisper server: {e}")
+        raise HTTPException(
+            status_code=503, 
+            detail="Transcription service is unavailable. Ensure the Whisper server is running on port 8178."
+        )
+    except Exception as e:
+        logger.error(f"Error in transcribe_audio API: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/get-summary/{meeting_id}")

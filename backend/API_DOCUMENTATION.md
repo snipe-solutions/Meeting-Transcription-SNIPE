@@ -141,7 +141,26 @@ Upload and process a transcript file. This endpoint provides the same functional
 }
 ```
 
-### 3. Get Summary
+### 3. Transcribe Audio
+Upload an audio file (wav, mp3, m4a, etc.) to securely convert it into text using the local Whisper AI engine. No data leaves the machine. This acts as a proxy to the internal `whisper-server`.
+
+**Endpoint:** `/transcribe`  
+**Method:** POST  
+**Content-Type:** `multipart/form-data`
+
+#### Request Parameters
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| file | File | Yes | The audio file to transcribe (e.g., meeting recording). |
+
+#### Response
+```json
+{
+    "text": "The transcribed text of the meeting... "
+}
+```
+
+### 4. Get Summary
 Retrieve the generated summary for a specific process.
 
 **Endpoint:** `/get-summary/{process_id}`  

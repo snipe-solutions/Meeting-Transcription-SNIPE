@@ -347,6 +347,12 @@ build_image() {
             # For local builds, create a simple tag without timestamp
             log_info "Tagging locally: $latest_tag"
             docker tag "$full_tag" "$latest_tag"
+            # So docker-compose (image: meetily-backend:latest) uses this image
+            if [ "$build_type" = "app" ]; then
+                local compose_tag="${REGISTRY:+${REGISTRY}/}meetily-backend:latest"
+                log_info "Tagging for compose: $compose_tag"
+                docker tag "$full_tag" "$compose_tag"
+            fi
         fi
         
         return 0

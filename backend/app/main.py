@@ -378,8 +378,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
     try:
         logger.info(f"Received transcription request for file: {file.filename}")
         
-        # Whisper server URL (running locally on port 8178)
-        whisper_url = "http://localhost:8178/inference"
+        # Whisper server URL (env for Docker: use service name e.g. http://whisper-server:8178)
+        whisper_base = os.getenv("WHISPER_SERVER_URL", "http://localhost:8178")
+        whisper_url = f"{whisper_base.rstrip('/')}/inference"
         
         # 1. Read the audio upload directly into a temporary WAV wrapper buffer
         # The Whisper native C++ engine rigidly requires 16000Hz PCM Stereo for Diarization chunks.

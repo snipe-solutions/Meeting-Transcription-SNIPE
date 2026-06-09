@@ -424,9 +424,11 @@ async def transcribe_audio(file: UploadFile = File(...)):
                     "response_format": "json",
                     "temperature": "0.0",
                 }
-                if diarize:
-                    # Channel-energy diarization; whisper prefixes "(speaker N)" per segment in `text`.
-                    data["diarize"] = "true"
+                # IMPORTANT: whisper-server defaults diarize=true and then read_wav() rejects a
+                # MONO upload ("must be stereo for diarization"), returning HTTP 200 with an empty
+                # transcript. So always state explicitly which channel layout we sent.
+                # diarize=true also makes whisper prefix "(speaker N)" per segment in `text`.
+                data["diarize"] = "true" if diarize else "false"
 
                 # Make request to whisper server (use timeout=None since inference can be slow)
                 async with httpx.AsyncClient(timeout=None) as client:
@@ -449,7 +451,12 @@ async def transcribe_audio(file: UploadFile = File(...)):
             )
             
         result = response.json()
-        
+
+        # whisper-server returns HTTP 200 even on read/inference failures, with {"error": ...}.
+        # Surface that as a real error instead of silently returning an empty transcript.
+        if isinstance(result, dict) and result.get("error"):
+            raise RuntimeError(f"Whisper server error: {result['error']}")
+
         # The whisper server returns JSON matching { "text": "..." }
         transcribed_text = result.get("text", "")
         

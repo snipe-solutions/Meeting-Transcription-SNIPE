@@ -422,8 +422,11 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
                 data = {
                     "response_format": "json",
-                    "temperature": "0.0"
+                    "temperature": "0.0",
                 }
+                if diarize:
+                    # Channel-energy diarization; whisper prefixes "(speaker N)" per segment in `text`.
+                    data["diarize"] = "true"
 
                 # Make request to whisper server (use timeout=None since inference can be slow)
                 async with httpx.AsyncClient(timeout=None) as client:

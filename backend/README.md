@@ -80,6 +80,12 @@ Docker provides the easiest setup with automatic dependency management, GPU dete
 - 8GB+ RAM allocated to Docker
 - For GPU: NVIDIA drivers + nvidia-container-toolkit
 
+**Before first Docker build:** `whisper.cpp` is a git submodule. From the repo root run:
+```powershell
+git submodule update --init --recursive
+```
+Without this, the Whisper server image build fails with "CMakeLists.txt not found".
+
 ### Windows (PowerShell)
 
 #### Basic Setup

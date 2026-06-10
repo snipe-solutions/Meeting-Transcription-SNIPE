@@ -233,6 +233,12 @@ try {
         Handle-Error "whisper.cpp directory not found at: $whisperPath"
     }
     
+    $cmakeListsPath = Join-Path $whisperPath "CMakeLists.txt"
+    if (-not (Test-Path $cmakeListsPath -PathType Leaf)) {
+        Write-Error "whisper.cpp is missing CMakeLists.txt (likely submodule not initialized). From repo root run: git submodule update --init --recursive"
+        exit 1
+    }
+    
     Set-Location -Path $whisperPath
     Write-Info "Changed to directory: $(Get-Location)"
     

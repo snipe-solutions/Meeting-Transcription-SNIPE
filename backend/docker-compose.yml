@@ -187,7 +187,9 @@ services:
       - DATABASE_PATH=/app/data/meeting_minutes.db
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - WHISPER_SERVER_URL=http://whisper-server:8178
-    
+      # Must match the whisper-server setting: enables stereo WAV + diarize request param
+      - WHISPER_DIARIZE=${WHISPER_DIARIZE:-false}
+
     # Add extra host for Docker Desktop compatibility
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -249,7 +251,9 @@ services:
       - DATABASE_PATH=/app/data/meeting_minutes.db
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - WHISPER_SERVER_URL=http://whisper-server-macos:8178
-    
+      # Must match the whisper-server setting: enables stereo WAV + diarize request param
+      - WHISPER_DIARIZE=${WHISPER_DIARIZE:-false}
+
     # Add extra host for Docker Desktop compatibility
     extra_hosts:
       - "host.docker.internal:host-gateway"

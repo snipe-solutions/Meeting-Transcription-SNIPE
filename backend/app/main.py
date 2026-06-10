@@ -5,9 +5,9 @@ from pydantic import BaseModel
 import uvicorn
 from typing import Optional, List
 import httpx
-from pydub import AudioSegment
 import tempfile
 import os
+import asyncio
 import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
@@ -382,42 +382,60 @@ async def transcribe_audio(file: UploadFile = File(...)):
         whisper_base = os.getenv("WHISPER_SERVER_URL", "http://localhost:8178")
         whisper_url = f"{whisper_base.rstrip('/')}/inference"
         
-        # 1. Read the audio upload directly into a temporary WAV wrapper buffer
-        # The Whisper native C++ engine rigidly requires 16000Hz PCM Stereo for Diarization chunks.
-        content = await file.read()
-        
+        # 1. Stream the upload to a temp file (avoids holding the whole upload in RAM).
+        # Whisper only needs 16kHz mono PCM; stereo is required ONLY when diarization is
+        # enabled (WHISPER_DIARIZE=true), so default to mono to halve WAV size & memory.
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_input:
-            temp_input.write(content)
+            while chunk := await file.read(1024 * 1024):
+                temp_input.write(chunk)
             temp_input_path = temp_input.name
-            
+
         temp_wav_path = tempfile.mktemp(suffix=".wav")
-        
+
         try:
-            logger.info("Converting uploaded audio to 16kHz Stereo WAV for Whisper C++ ingestion.")
-            audio = AudioSegment.from_file(temp_input_path)
-            
-            # Reformat explicitly to 16kHz (frame_rate) and Stereo (channels=2)
-            audio = audio.set_frame_rate(16000).set_channels(2)
-            # Export tightly to pcm_16le WAV
-            audio.export(temp_wav_path, format="wav", codec="pcm_s16le")
-            
-            with open(temp_wav_path, "rb") as f:
-                wav_content = f.read()
-                
-            # Prepare the multipart form data for the whisper server
-            files = {
-                "file": ("converted.wav", wav_content, "audio/wav")
-            }
-            
-            data = {
-                "response_format": "json",
-                "temperature": "0.0"
-            }
-            
-            # Make request to whisper server (use timeout=None since inference can be slow)
-            async with httpx.AsyncClient(timeout=None) as client:
-                response = await client.post(whisper_url, files=files, data=data)
-                
+            diarize = os.getenv("WHISPER_DIARIZE", "false").strip().lower() == "true"
+            channels = "2" if diarize else "1"
+
+            logger.info(f"Converting uploaded audio to 16kHz {'stereo' if diarize else 'mono'} WAV (single-pass ffmpeg).")
+            # Single ffmpeg pass: input -> 16kHz pcm_s16le WAV. Replaces the previous pydub
+            # round-trip, which decoded AND re-encoded via ffmpeg twice and buffered the
+            # full sample array in memory.
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-nostdin", "-y", "-i", temp_input_path,
+                "-ar", "16000", "-ac", channels, "-c:a", "pcm_s16le", "-f", "wav", temp_wav_path,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg conversion failed (rc={proc.returncode}): "
+                    f"{stderr.decode(errors='replace')[-2000:]}"
+                )
+
+            # Stream the converted WAV to the whisper server via a file handle
+            # (httpx streams file objects) instead of reading it fully into memory.
+            wav_file = open(temp_wav_path, "rb")
+            try:
+                files = {
+                    "file": ("converted.wav", wav_file, "audio/wav")
+                }
+
+                data = {
+                    "response_format": "json",
+                    "temperature": "0.0",
+                }
+                # IMPORTANT: whisper-server defaults diarize=true and then read_wav() rejects a
+                # MONO upload ("must be stereo for diarization"), returning HTTP 200 with an empty
+                # transcript. So always state explicitly which channel layout we sent.
+                # diarize=true also makes whisper prefix "(speaker N)" per segment in `text`.
+                data["diarize"] = "true" if diarize else "false"
+
+                # Make request to whisper server (use timeout=None since inference can be slow)
+                async with httpx.AsyncClient(timeout=None) as client:
+                    response = await client.post(whisper_url, files=files, data=data)
+            finally:
+                wav_file.close()
+
         finally:
             # Clean up temporary buffers
             if os.path.exists(temp_input_path):
@@ -433,7 +451,12 @@ async def transcribe_audio(file: UploadFile = File(...)):
             )
             
         result = response.json()
-        
+
+        # whisper-server returns HTTP 200 even on read/inference failures, with {"error": ...}.
+        # Surface that as a real error instead of silently returning an empty transcript.
+        if isinstance(result, dict) and result.get("error"):
+            raise RuntimeError(f"Whisper server error: {result['error']}")
+
         # The whisper server returns JSON matching { "text": "..." }
         transcribed_text = result.get("text", "")
         

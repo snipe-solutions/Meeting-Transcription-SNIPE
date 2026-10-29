@@ -78,3 +78,6 @@ target/
 
 frontend/src-tauri/binaries/
 Cargo.lock
+
+# Stale editor/refactor backups (INFRA-69)
+*.rs.backup
